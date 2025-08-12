@@ -1,0 +1,28 @@
+{
+  "name": "china-surf-forecast",
+  "version": "6.0.0",
+  "description": "中国冲浪预测系统 - 专业海况分析与AI推荐",
+  "main": "index.html",
+  "scripts": {
+    "start": "serve -s .",
+    "build": "echo 'Static site - no build needed'",
+    "deploy": "vercel --prod"
+  },
+  "keywords": [
+    "surf",
+    "forecast",
+    "china",
+    "weather",
+    "ocean",
+    "windy-api"
+  ],
+  "author": "China Surf Forecast Team",
+  "license": "MIT",
+  "dependencies": {},
+  "devDependencies": {
+    "serve": "^14.0.0"
+  },
+  "engines": {
+    "node": ">=16.0.0"
+  }
+}

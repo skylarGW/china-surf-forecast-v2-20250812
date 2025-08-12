@@ -1,0 +1,233 @@
+# AWS CloudFormation模板 - 访客统计系统
+AWSTemplateFormatVersion: '2010-09-09'
+Description: '中国冲浪预测系统 - 访客统计基础设施'
+
+Parameters:
+  ProjectName:
+    Type: String
+    Default: 'surf-forecast'
+    Description: '项目名称'
+  
+  Environment:
+    Type: String
+    Default: 'prod'
+    AllowedValues: ['dev', 'prod']
+    Description: '环境类型'
+
+Resources:
+  # DynamoDB表 - 访客统计
+  VisitorStatsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${ProjectName}-visitor-stats-${Environment}'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+      KeySchema:
+        - AttributeName: PK
+          KeyType: HASH
+        - AttributeName: SK
+          KeyType: RANGE
+      TimeToLiveSpecification:
+        AttributeName: TTL
+        Enabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
+  # Lambda执行角色
+  LambdaExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ProjectName}-lambda-role-${Environment}'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: DynamoDBAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                Resource: !GetAtt VisitorStatsTable.Arn
+
+  # Lambda函数
+  VisitorStatsFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ProjectName}-visitor-stats-${Environment}'
+      Runtime: nodejs18.x
+      Handler: index.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
+      Code:
+        ZipFile: |
+          // 这里会被实际的Lambda代码替换
+          exports.handler = async (event) => {
+            return {
+              statusCode: 200,
+              body: JSON.stringify({message: 'Hello from Lambda'})
+            };
+          };
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref VisitorStatsTable
+          ENVIRONMENT: !Ref Environment
+      Timeout: 30
+      MemorySize: 256
+      Tags:
+        - Key: Project
+          Value: !Ref ProjectName
+        - Key: Environment
+          Value: !Ref Environment
+
+  # API Gateway
+  VisitorStatsApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Sub '${ProjectName}-visitor-stats-api-${Environment}'
+      Description: '访客统计API'
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+
+  # API Gateway资源
+  VisitorStatsResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref VisitorStatsApi
+      ParentId: !GetAtt VisitorStatsApi.RootResourceId
+      PathPart: 'visitor-stats'
+
+  # API Gateway方法 - POST
+  VisitorStatsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref VisitorStatsApi
+      ResourceId: !Ref VisitorStatsResource
+      HttpMethod: POST
+      AuthorizationType: NONE
+      ApiKeyRequired: true
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${VisitorStatsFunction.Arn}/invocations'
+
+  # API Gateway方法 - OPTIONS (CORS)
+  VisitorStatsOptionsMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref VisitorStatsApi
+      ResourceId: !Ref VisitorStatsResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-API-Key'"
+              method.response.header.Access-Control-Allow-Methods: "'POST,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: true
+            method.response.header.Access-Control-Allow-Methods: true
+            method.response.header.Access-Control-Allow-Origin: true
+
+  # Lambda权限
+  LambdaApiGatewayPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref VisitorStatsFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${VisitorStatsApi}/*/*'
+
+  # API部署
+  ApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - VisitorStatsMethod
+      - VisitorStatsOptionsMethod
+    Properties:
+      RestApiId: !Ref VisitorStatsApi
+      StageName: !Ref Environment
+
+  # API密钥
+  ApiKey:
+    Type: AWS::ApiGateway::ApiKey
+    Properties:
+      Name: !Sub '${ProjectName}-api-key-${Environment}'
+      Description: '访客统计API密钥'
+      Enabled: true
+
+  # 使用计划
+  UsagePlan:
+    Type: AWS::ApiGateway::UsagePlan
+    Properties:
+      UsagePlanName: !Sub '${ProjectName}-usage-plan-${Environment}'
+      Description: '访客统计使用计划'
+      ApiStages:
+        - ApiId: !Ref VisitorStatsApi
+          Stage: !Ref Environment
+      Throttle:
+        RateLimit: 100
+        BurstLimit: 200
+      Quota:
+        Limit: 10000
+        Period: MONTH
+
+  # 使用计划密钥
+  UsagePlanKey:
+    Type: AWS::ApiGateway::UsagePlanKey
+    Properties:
+      KeyId: !Ref ApiKey
+      KeyType: API_KEY
+      UsagePlanId: !Ref UsagePlan
+
+Outputs:
+  ApiEndpoint:
+    Description: 'API Gateway端点URL'
+    Value: !Sub 'https://${VisitorStatsApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}/visitor-stats'
+    Export:
+      Name: !Sub '${ProjectName}-api-endpoint-${Environment}'
+
+  ApiKey:
+    Description: 'API密钥ID'
+    Value: !Ref ApiKey
+    Export:
+      Name: !Sub '${ProjectName}-api-key-${Environment}'
+
+  DynamoDBTable:
+    Description: 'DynamoDB表名'
+    Value: !Ref VisitorStatsTable
+    Export:
+      Name: !Sub '${ProjectName}-dynamodb-table-${Environment}'
+
+  LambdaFunction:
+    Description: 'Lambda函数ARN'
+    Value: !GetAtt VisitorStatsFunction.Arn
+    Export:
+      Name: !Sub '${ProjectName}-lambda-arn-${Environment}'
